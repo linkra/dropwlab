@@ -1,0 +1,7 @@
+template: Helloo, %s!
+defaultName: Farmer
+
+logging:
+  level: INFO
+  loggers:
+    dropwlab.delaval.com: DEBUG
