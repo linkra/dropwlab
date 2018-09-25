@@ -4,7 +4,7 @@ import Delaval.VMSController.VCCache.CacheFunctionType;
 
 public class EventList {
 
-    public CacheFunctionType[] getEventList() {
+    public static CacheFunctionType[] getEventList() {
         return eventList;
     }
 

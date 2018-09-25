@@ -3,76 +3,88 @@ package dropwlab.delaval.com.core.vc;
 import Delaval.VMSController.DataObject.Serializes;
 import Delaval.VMSController.DataObject.SystemKeys;
 import Delaval.VMSController.DataObject.VMSData;
+import Delaval.VMSController.DataObject.VMSKeyValueTable;
 import Delaval.VMSController.Logger.Log;
 import Delaval.VMSController.VCCache.CacheFunctionType;
 import Delaval.VMSController.VMSDataTransport.*;
 import Delaval.VMSController.VMSDataTransport.VMSCache.CacheConnection;
 
-import java.text.SimpleDateFormat;
-import java.time.LocalDateTime;
 import java.util.concurrent.Semaphore;
+import java.util.logging.Logger;
 
 public class VCListener implements IVMSDataEventListner {
-
+    private static final Logger logger = Logger.getLogger(VCListener.class.getName());
     private CacheFunctionType[] functionTypes;
-    private static CacheConnection cache;
-    private static VMSDataClient dsp;
-    private static Semaphore criticalSection;
-    private static final SimpleDateFormat dateFormat = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS");
-    private static final String VCListenerName = "VCListener";
+    private static CacheConnection cacheConnection;
+    private static VMSDataClient vmsDataClient;
+    private static Semaphore criticalSectionSemaphore;
+    private static final String VCListenerName = "VCListenerLina";
+    private static final String vcIpAddress = "10.34.35.11";
     private static final int registerAttempts = 3;
+    private String events;
 
-    public VCListener() {
-        String vcIpAddress = "localhost";
-        cache = new CacheConnection(vcIpAddress, EndPoints.CacheServerPort, VCListenerName);
-        cache.StartAndCheck();
-        registerEvents();
-        dsp = new VMSDataClient(vcIpAddress, EndPoints.DeviceServerPort);
-        dsp.SetSerializationType(Serializes.SerializeType.MilkStation, Serializes.SerializeType.MilkStation);
-        dsp.Start(VCListenerName);
-        EventList eventList = new EventList();
-        this.functionTypes = eventList.getEventList();
-        criticalSection = new Semaphore(1);
+    public static void main(String[] args) {
+        new VCListener();
     }
 
-    private void stop() {
-        cache.Stop();
-        dsp.Stop();
-        cache = null;
-        dsp = null;
+    VCListener() {
+        this.functionTypes = EventList.getEventList();
+        criticalSectionSemaphore = new Semaphore(1);
+
+        startCacheConnection();
+        registerEvents();
+        startVMSDataClient();
+    }
+
+    public String getEvents() {
+        return events;
+    }
+
+    private void startCacheConnection() {
+        cacheConnection = new CacheConnection(vcIpAddress, EndPoints.CacheServerPort, VCListenerName);
+        cacheConnection.StartAndCheck();
+    }
+
+    private void startVMSDataClient() {
+        vmsDataClient = new VMSDataClient(vcIpAddress, EndPoints.DeviceServerPort);
+        vmsDataClient.SetSerializationType(Serializes.SerializeType.MilkStation, Serializes.SerializeType.MilkStation);
+        vmsDataClient.Start(VCListenerName);
     }
 
     private void registerEvents() {
-        boolean notInitiated = true;
+        boolean initiated = false;
         try {
-            attemptToRegister(notInitiated, registerAttempts);
+            attemptToRegister(initiated, registerAttempts);
         } catch (Exception e) {
-            err("Could not register events " + Log.getStackTrace(e));
+            logger.severe("ERROR: Could not register events " + Log.getStackTrace(e));
         } finally {
             stop();
         }
     }
 
-    private void attemptToRegister(boolean notInitiated, int attempts) throws InterruptedException {
-        while ((--attempts >= 0) && notInitiated) {
+    private void attemptToRegister(boolean initiated, int attempts) throws InterruptedException {
+        while ((--attempts >= 0) && !initiated) {
             Thread.sleep(2000);
-            cache.GetVMSDataClient().SetEventListner(this);
+            cacheConnection.GetVMSDataClient().SetEventListner(this);
             if (registerToCache() >= functionTypes.length) {
-                notInitiated = false;
-                out("All events registrated ok");
+                initiated = true;
+                logger.info("All events registered successfully");
             }
         }
     }
 
     private int registerToCache() {
+        int numberOfRegistered;
         int i = -1;
         while (++i < functionTypes.length) {
-            if (!cache.RegisterEventInCache(functionTypes[i])) {
-                err("Cannot register " + functionTypes[i] + " Event");
+            logger.info("register " + functionTypes[i] + "\n");
+            if (!cacheConnection.RegisterEventInCache(functionTypes[i])) {
+                logger.info("ERROR: Cannot register " + functionTypes[i] + " event");
                 break;
             }
         }
-        return i;
+        numberOfRegistered = i;
+        return numberOfRegistered;
     }
 
     /**
@@ -84,48 +96,57 @@ public class VCListener implements IVMSDataEventListner {
     @Override
     public void VMSDataEvent(VMSData vmsData, MessageSemaphore messageDispatchLock) {
         try {
-            criticalSection.acquire();
-            criticalSection.drainPermits();
+            criticalSectionSemaphore.acquire();
+            criticalSectionSemaphore.drainPermits();
             if (getMethod(vmsData) == null) {
                 return;
             }
             if (vmsData.GetValue(SystemKeys._PRIMARY_KEY) == null) {
                 return;
             }
-            vmsData.SelectRow(1); // TODO: why?
-            logKeyValueTable(vmsData, getMethod(vmsData));
+            vmsData.SelectRow(1);
+            events = logKeyValueTable(vmsData, getMethod(vmsData));
         } catch (InterruptedException ex) {
-            err("Failed to get lock: " + Log.getStackTrace(ex));
+            logger.info("ERROR: Failed to get lock: " + Log.getStackTrace(ex));
         } catch (Exception e) {
-            err(Log.getStackTrace(e) + "\n\n" + vmsData);
+            logger.info("ERROR: " + Log.getStackTrace(e) + "\n\n" + vmsData);
         } finally {
-            criticalSection.release();
+            criticalSectionSemaphore.release();
         }
     }
 
     private String getMethod(VMSData vmsData) {
         String method = vmsData.GetValue(SystemKeys._METHOD);
         if (method == null || !method.contains("Event")) {
-            out("Full sync");
+            logger.info("Full sync");
             return null;
         }
         return method;
     }
 
-    private void logKeyValueTable(VMSData vmsData, String method) {
+    private String logKeyValueTable(VMSData vmsData, String method) {
         StringBuilder sb = new StringBuilder();
-        vmsData.getkeyValueTable(1).Serialize(sb, Serializes.SerializeType.Xml);
-        String serializedData = sb.toString();
-        serializedData = "<" + method + ">\n" + serializedData + "\n</" + method + ">";
-        out(serializedData);
+        VMSKeyValueTable vmsKeyValueTable = vmsData.getkeyValueTable(1);
+        if (vmsKeyValueTable != null) {
+            vmsKeyValueTable.Serialize(sb, Serializes.SerializeType.Xml);
+            String serializedTableContent = sb.toString();
+            serializedTableContent = "<" + method + ">\n" + serializedTableContent + "\n</" + method + ">";
+            logger.info(serializedTableContent);
+            return serializedTableContent;
+        }
+        logger.info(" ---------------->> vmsData.getkeyValueTable(1) returned " + vmsKeyValueTable);
+        return "";
     }
 
-    private static void out(String log) {
-        System.out.println(dateFormat.format(LocalDateTime.now() + " " + log));
-    }
-
-    private static void err(String log) {
-        System.err.println(dateFormat.format(LocalDateTime.now() + " " + log));
+    private void stop() {
+        if (cacheConnection != null) {
+            cacheConnection.Stop();
+            cacheConnection = null;
+        }
+        if (vmsDataClient != null) {
+            vmsDataClient.Stop();
+            vmsDataClient = null;
+        }
     }
 
     @Override
