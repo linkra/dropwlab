@@ -10,14 +10,14 @@ import Delaval.VMSController.VMSDataTransport.*;
 import Delaval.VMSController.VMSDataTransport.VMSCache.CacheConnection;
 
 import java.io.IOException;
+import java.net.URISyntaxException;
 import java.util.concurrent.Semaphore;
 import java.util.logging.Logger;
 
 public class VCListener implements IVMSDataEventListner {
     private static final Logger logger = Logger.getLogger(VCListener.class.getName());
     private CacheFunctionType[] functionTypes;
-    private static CacheConnection cache;
-    private static VMSDataClient dsp;
+    private static CacheConnection cacheConnection;
     private static Semaphore semaphore;
     private static final String vcListenerName = "VCListener";
     private static final String vcIpAddress = "10.34.35.11";
@@ -41,8 +41,8 @@ public class VCListener implements IVMSDataEventListner {
     }
 
     private void startCacheConnection() {
-        cache = new CacheConnection(vcIpAddress, EndPoints.CacheServerPort, vcListenerName);
-        cache.StartAndCheck();
+        cacheConnection = new CacheConnection(vcIpAddress, EndPoints.CacheServerPort, vcListenerName);
+        cacheConnection.StartAndCheck();
     }
 
     private void registerEvents() {
@@ -57,7 +57,7 @@ public class VCListener implements IVMSDataEventListner {
     private void attemptToRegister(boolean initiated, int attempts) throws InterruptedException {
         while ((--attempts >= 0) && !initiated) {
             Thread.sleep(2000);
-            cache.GetVMSDataClient().SetEventListner(this);
+            cacheConnection.GetVMSDataClient().SetEventListner(this);
             if (registerToCache() >= functionTypes.length) {
                 initiated = true;
                 logger.info("All event registered successfully");
@@ -66,9 +66,9 @@ public class VCListener implements IVMSDataEventListner {
     }
 
     private void startVMSDataClient() {
-        dsp = new VMSDataClient(vcIpAddress, EndPoints.DeviceServerPort);
-        dsp.SetSerializationType(Serializes.SerializeType.MilkStation, Serializes.SerializeType.MilkStation);
-        dsp.Start(vcListenerName);
+        VMSDataClient vmsDataClient = new VMSDataClient(vcIpAddress, EndPoints.DeviceServerPort);
+        vmsDataClient.SetSerializationType(Serializes.SerializeType.MilkStation, Serializes.SerializeType.MilkStation);
+        vmsDataClient.Start(vcListenerName);
     }
 
     private int registerToCache() {
@@ -76,7 +76,7 @@ public class VCListener implements IVMSDataEventListner {
         int i = -1;
         while (++i < functionTypes.length) {
             logger.info("register " + functionTypes[i] + "\n");
-            if (!cache.RegisterEventInCache(functionTypes[i])) {
+            if (!cacheConnection.RegisterEventInCache(functionTypes[i])) {
                 logger.info("ERROR: Cannot register " + functionTypes[i] + " event");
                 break;
             }
@@ -98,9 +98,9 @@ public class VCListener implements IVMSDataEventListner {
             if (vmsData.GetValue(SystemKeys._PRIMARY_KEY) == null) {
                 return;
             }
-            vmsData.SelectRow(1);
+            vmsData.SelectRow(1);  // FIXME: how to know which index to fetch?
             VMSKeyValueTable vmsKeyValueTable;
-            if (!method.equals("DeviceEvent")) {
+            if (!method.equals("Event")) {
                 vmsKeyValueTable = vmsData.getkeyValueTable(0);
             } else {
                 vmsKeyValueTable = vmsData.getkeyValueTable(1);
@@ -119,7 +119,7 @@ public class VCListener implements IVMSDataEventListner {
         }
     }
 
-    private String serializeEvent(String method, VMSKeyValueTable vmsKeyValueTable) throws IOException {
+    private String serializeEvent(String method, VMSKeyValueTable vmsKeyValueTable) throws IOException, URISyntaxException {
         String serializedEvent = "";
         if (vmsKeyValueTable != null) {
             StringBuilder sb = new StringBuilder();
@@ -129,13 +129,8 @@ public class VCListener implements IVMSDataEventListner {
         } else {
             logger.info("vmsKeyValueTable is " + vmsKeyValueTable);
         }
-
         Appender.append(serializedEvent);
-
-        StringBuilder stringBuilder = new StringBuilder();
-        stringBuilder.append(serializedEvent);
-        stringBuilder.append(" -- ");
-        return stringBuilder.toString();
+        return serializedEvent;
     }
 
     @Override
